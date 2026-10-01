@@ -76,3 +76,17 @@ memory-check passed.
 
 A separate short-circuit memory-check prototype regressed eight warm Dune
 builds (4.610 s versus 4.067 s) and was rejected.
+
+## Earlier JIT compilation: rejected experiment
+
+The experiment/jit-hotness branch reduces the hotness threshold from
+200,000 to 20,000. Eight warm Dune builds averaged 6.082 s versus the
+fresh inline-lookup control's 3.770 s, with substantial run-to-run
+variance. Native, flag, paging, self-modification, and precise-fault
+checks passed, but this tuning change is not a merge candidate.
+
+The instrumented warm build compiled 159 modules totaling 35,923,191
+Wasm bytes and performed 64,489,829 compiled runs. There were no
+cache-capacity evictions. Earlier compilation therefore did not reveal
+a capacity-eviction bottleneck in this run. Instrumented timings are
+not performance measurements.
