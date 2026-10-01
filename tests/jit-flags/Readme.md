@@ -59,9 +59,10 @@ directly in Wasm, avoiding a Rust helper call on every indirect jump. It
 uses compiler-derived field offsets and retains the missing-target exit.
 
 Eight warm Dune builds averaged 4.067 s with flags alone and 4.046 s with
-inline lookup, which does not establish a Dune speedup. Initial native
-indirect-call means were 0.862 s and 0.715 s respectively. These are
-microbenchmark results and require broader validation.
+inline lookup, which does not establish a Dune speedup. Matching native-only runs averaged 0.790 s for flags alone and 0.698 s
+for inline lookup on the indirect-call fixture (about 13% faster). Integer
+and memory means were unchanged. These are microbenchmark results and
+require broader validation.
 
 The final candidate passed Firefox flag, paging, multipage self-modifying
 code, and precise-fault checks; two Rust unit tests with warnings denied;
