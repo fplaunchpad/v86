@@ -1397,11 +1397,8 @@ fn jit_generate_module(
                     },
                     BasicBlockType::AbsoluteEip => {
                         // Check if we can stay in this module, if not exit
-                        codegen::gen_get_eip(ctx.builder);
-                        ctx.builder.const_i32(wasm_table_index.to_u16() as i32);
-                        ctx.builder.const_i32(state_flags.to_u32() as i32);
-                        ctx.builder.call_fn3_ret("jit_find_cache_entry_in_page");
-                        ctx.builder.tee_local(target_block);
+                        codegen::gen_find_cache_entry_in_page(ctx, target_block, state_flags);
+                        ctx.builder.get_local(target_block);
                         ctx.builder.const_i32(0);
                         ctx.builder.ge_i32();
                         // TODO: Could make this unconditional by including exit_label in the main br_table
