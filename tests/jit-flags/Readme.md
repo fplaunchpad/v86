@@ -76,3 +76,28 @@ memory-check passed.
 
 A separate short-circuit memory-check prototype regressed eight warm Dune
 builds (4.610 s versus 4.067 s) and was rejected.
+
+## Deferred flags across memory MOVs: rejected experiment
+
+The experiment/deferred-flags branch retains arithmetic operands in Wasm
+locals when flags are dead after intervening memory MOVs. It materializes
+flags before a memory slow path so faults and self-modifying-code exits
+retain precise architectural state. The scan is bounded and restricted to
+unprefixed 32-bit user-mode code with flat segmentation.
+
+An initial prototype omitted subtraction's lazy-flag marker. The expanded
+fault fixture caught this; the corrected candidate passes it, including
+register overwrites before faults. Timings from that initial prototype
+are invalid and are excluded from the comparison below.
+
+Fresh sequential eight-run warm Dune means were 3.770 s for inline lookup
+without deferral and 3.777 s with corrected deferral. Integer means were
+0.772 s versus 0.786 s; indirect calls 0.697 s versus 0.693 s; random
+memory 0.487 s versus 0.474 s. These do not establish a useful general
+speedup. Do not merge this experiment for production.
+
+The corrected prototype passed native checksums, arithmetic flag checks,
+page aliasing, multipage self-modification, the stronger precise-fault
+fixture, and Rust unit tests with warnings denied in Chromium. The
+deferred-flags prototype has not been validated in Firefox or with the
+complete course workflow. Earlier branches have separate validation.

@@ -336,12 +336,21 @@ pub enum Instruction {
     Other,
 }
 
+pub struct DeferredFlags {
+    pub overwrite_address: u32,
+    pub op1: Option<WasmLocal>,
+    pub result: WasmLocal,
+    pub changed: i32,
+    pub clear: i32,
+}
+
 pub struct JitContext<'a> {
     pub cpu: &'a mut CpuContext,
     pub builder: &'a mut WasmBuilder,
     pub register_locals: &'a mut Vec<WasmLocal>,
     pub start_of_current_instruction: u32,
     pub end_of_current_block: u32,
+    pub deferred_flags: Option<DeferredFlags>,
     pub exit_with_fault_label: Label,
     pub exit_label: Label,
     pub current_instruction: Instruction,
@@ -1254,6 +1263,7 @@ fn jit_generate_module(
         register_locals: &mut register_locals,
         start_of_current_instruction: 0,
         end_of_current_block: 0,
+        deferred_flags: None,
         exit_with_fault_label,
         exit_label,
         current_instruction: Instruction::Other,
@@ -2113,6 +2123,9 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
         let wasm_length_before = ctx.builder.instruction_body_length();
 
         ctx.start_of_current_instruction = ctx.cpu.eip;
+        if ctx.deferred_flags.as_ref().map(|f| f.overwrite_address) == Some(ctx.cpu.eip) {
+            codegen::discard_deferred_flags(ctx);
+        }
         let start_eip = ctx.cpu.eip;
         let mut instruction_flags = 0;
         jit_instructions::jit_instruction(ctx, &mut instruction_flags);
@@ -2150,6 +2163,9 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
 
         ctx.previous_instruction = mem::replace(&mut ctx.current_instruction, Instruction::Other);
     }
+    // Defensive fallback if analysis and generation stop at different boundaries.
+    codegen::flush_deferred_flags(ctx);
+    codegen::discard_deferred_flags(ctx);
 }
 
 pub fn jit_increase_hotness_and_maybe_compile(

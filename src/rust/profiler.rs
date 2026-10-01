@@ -118,6 +118,8 @@ pub enum stat {
     SEG_OFFSET_NOT_OPTIMISED_FS,
     SEG_OFFSET_NOT_OPTIMISED_GS,
     SEG_OFFSET_NOT_OPTIMISED_NOT_FLAT,
+    DEFERRED_FLAGS,
+    DEFERRED_FLAGS_FLUSHED,
 }
 
 #[allow(non_upper_case_globals)]

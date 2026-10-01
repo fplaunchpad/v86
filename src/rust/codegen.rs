@@ -752,6 +752,8 @@ fn gen_safe_read(
 
     ctx.builder.br_if(cont);
 
+    flush_deferred_flags(ctx);
+
     if cfg!(feature = "profiler") {
         ctx.builder.get_local(&address_local);
         ctx.builder.get_local(&entry_local);
@@ -962,6 +964,8 @@ fn gen_safe_write(
     }
 
     ctx.builder.br_if(cont);
+
+    flush_deferred_flags(ctx);
 
     if cfg!(feature = "profiler") {
         ctx.builder.get_local(&address_local);
@@ -1705,6 +1709,29 @@ pub fn gen_get_real_eip(ctx: &mut JitContext) {
         ctx.builder
             .load_fixed_i32(global_pointers::get_seg_offset(regs::CS));
         ctx.builder.sub_i32();
+    }
+}
+
+pub fn flush_deferred_flags(ctx: &mut JitContext) {
+    if let Some(flags) = &ctx.deferred_flags {
+        gen_profiler_stat_increment(ctx.builder, profiler::stat::DEFERRED_FLAGS_FLUSHED);
+        if let Some(op1) = &flags.op1 {
+            gen_set_last_op1(ctx.builder, op1);
+        }
+        gen_set_last_result(ctx.builder, &flags.result);
+        gen_set_last_op_size_and_flags_changed(ctx.builder, OPSIZE_32, flags.changed);
+        if flags.clear != 0 {
+            gen_clear_flags_bits(ctx.builder, flags.clear);
+        }
+    }
+}
+
+pub fn discard_deferred_flags(ctx: &mut JitContext) {
+    if let Some(flags) = ctx.deferred_flags.take() {
+        if let Some(op1) = flags.op1 {
+            ctx.builder.free_local(op1);
+        }
+        ctx.builder.free_local(flags.result);
     }
 }
 

@@ -991,14 +991,14 @@ fn gen_add8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
 // Elide flags only for unprefixed register operations when a later
 // instruction in this basic block overwrites all arithmetic flags. Every
 // intervening instruction must neither read flags nor fault.
-fn arithmetic_flags_are_dead(ctx: &JitContext) -> bool {
+fn find_flags_overwrite(ctx: &JitContext, allow_memory: bool) -> Option<(u32, bool)> {
     if !ctx.cpu.osize_32() || ctx.cpu.prefixes != 0 {
-        return false;
+        return None;
     }
     let current = ctx.start_of_current_instruction;
     let next = ctx.cpu.eip;
     if next >= ctx.end_of_current_block || next & 0xFFF >= 0xFF0 {
-        return false;
+        return None;
     }
     let op = memory::read8(current) as u8;
     let modrm = memory::read8(current + 1) as u8;
@@ -1009,23 +1009,36 @@ fn arithmetic_flags_are_dead(ctx: &JitContext) -> bool {
         _ => false,
     };
     if !current_register {
-        return false;
+        return None;
     }
     // Register moves and LEA neither read arithmetic flags nor fault. Scan
     // across a bounded sequence, stopping at every other instruction.
     let mut next = next;
+    let mut saw_memory = false;
     for _ in 0..16 {
         if next >= ctx.end_of_current_block || next & 0xFFF >= 0xFF0 {
-            return false;
+            return None;
         }
         let op = memory::read8(next) as u8;
         let modrm = memory::read8(next + 1) as u8;
         match op {
             0x01 | 0x03 | 0x09 | 0x0B | 0x21 | 0x23 | 0x29 | 0x2B | 0x31 | 0x33
-            | 0x39 | 0x3B | 0x85 => return modrm & 0xC0 == 0xC0,
-            0x05 | 0x0D | 0x25 | 0x2D | 0x35 | 0x3D | 0xA9 => return true,
-            0x81 | 0x83 => return modrm & 0xC0 == 0xC0 && !matches!((modrm >> 3) & 7, 2 | 3),
+            | 0x39 | 0x3B | 0x85 => return (modrm & 0xC0 == 0xC0).then_some((next, saw_memory)),
+            0x05 | 0x0D | 0x25 | 0x2D | 0x35 | 0x3D | 0xA9 => return Some((next, saw_memory)),
+            0x81 | 0x83 => return (modrm & 0xC0 == 0xC0 && !matches!((modrm >> 3) & 7, 2 | 3))
+                .then_some((next, saw_memory)),
             0x88 | 0x89 | 0x8A | 0x8B if modrm & 0xC0 == 0xC0 => next += 2,
+            0x89 | 0x8B if allow_memory => {
+                let mut decoder = ctx.cpu.clone();
+                decoder.eip = next + 2;
+                crate::modrm::skip(&mut decoder, modrm);
+                next = decoder.eip;
+                saw_memory = true;
+            },
+            0xA1 | 0xA3 if allow_memory => {
+                next += 5;
+                saw_memory = true;
+            },
             0x90..=0x97 => next += 1,
             0xB0..=0xB7 => next += 2,
             0xB8..=0xBF => next += 5,
@@ -1037,10 +1050,25 @@ fn arithmetic_flags_are_dead(ctx: &JitContext) -> bool {
             },
             0x0F if matches!(modrm, 0xB6 | 0xB7 | 0xBE | 0xBF)
                 && memory::read8(next + 2) & 0xC0 == 0xC0 => next += 3,
-            _ => return false,
+            _ => return None,
         }
     }
-    false
+    None
+}
+
+fn arithmetic_flags_are_dead(ctx: &JitContext) -> bool {
+    find_flags_overwrite(ctx, false).is_some()
+}
+
+// Memory MOVs can fault or exit through self-modifying-code handling. Keep
+// the operands in locals and materialize the flags before those slow paths.
+fn deferred_flags_overwrite(ctx: &JitContext) -> Option<u32> {
+    if !ctx.cpu.has_flat_segmentation() || !ctx.cpu.cpl3() {
+        return None;
+    }
+    find_flags_overwrite(ctx, true)
+        .filter(|&(_, memory)| memory)
+        .map(|(address, _)| address)
 }
 
 fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
@@ -1049,6 +1077,24 @@ fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         source_operand.gen_get(ctx.builder);
         ctx.builder.add_i32();
         ctx.builder.set_local(dest_operand);
+        return;
+    }
+    if let Some(overwrite_address) = deferred_flags_overwrite(ctx) {
+        codegen::gen_profiler_stat_increment(ctx.builder, crate::profiler::stat::DEFERRED_FLAGS);
+        ctx.builder.get_local(dest_operand);
+        let op1 = ctx.builder.set_new_local();
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.add_i32();
+        ctx.builder.tee_local(dest_operand);
+        let result = ctx.builder.set_new_local();
+        ctx.deferred_flags = Some(crate::jit::DeferredFlags {
+            overwrite_address,
+            op1: Some(op1),
+            result,
+            changed: FLAGS_ALL,
+            clear: 0,
+        });
         return;
     }
     ctx.current_instruction = Instruction::Add {
@@ -1112,6 +1158,24 @@ fn gen_sub32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         source_operand.gen_get(ctx.builder);
         ctx.builder.sub_i32();
         ctx.builder.set_local(dest_operand);
+        return;
+    }
+    if let Some(overwrite_address) = deferred_flags_overwrite(ctx) {
+        codegen::gen_profiler_stat_increment(ctx.builder, crate::profiler::stat::DEFERRED_FLAGS);
+        ctx.builder.get_local(dest_operand);
+        let op1 = ctx.builder.set_new_local();
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.sub_i32();
+        ctx.builder.tee_local(dest_operand);
+        let result = ctx.builder.set_new_local();
+        ctx.deferred_flags = Some(crate::jit::DeferredFlags {
+            overwrite_address,
+            op1: Some(op1),
+            result,
+            changed: FLAGS_ALL | FLAG_SUB,
+            clear: 0,
+        });
         return;
     }
     ctx.current_instruction = Instruction::Sub {
@@ -1413,6 +1477,22 @@ fn gen_and32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         ctx.builder.set_local(dest_operand);
         return;
     }
+    if let Some(overwrite_address) = deferred_flags_overwrite(ctx) {
+        codegen::gen_profiler_stat_increment(ctx.builder, crate::profiler::stat::DEFERRED_FLAGS);
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.and_i32();
+        ctx.builder.tee_local(dest_operand);
+        let result = ctx.builder.set_new_local();
+        ctx.deferred_flags = Some(crate::jit::DeferredFlags {
+            overwrite_address,
+            op1: None,
+            result,
+            changed: FLAGS_ALL & !FLAG_CARRY & !FLAG_OVERFLOW & !FLAG_ADJUST,
+            clear: FLAG_CARRY | FLAG_OVERFLOW | FLAG_ADJUST,
+        });
+        return;
+    }
     ctx.current_instruction = Instruction::Bitwise {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1507,6 +1587,22 @@ fn gen_or32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
         ctx.builder.set_local(dest_operand);
         return;
     }
+    if let Some(overwrite_address) = deferred_flags_overwrite(ctx) {
+        codegen::gen_profiler_stat_increment(ctx.builder, crate::profiler::stat::DEFERRED_FLAGS);
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.or_i32();
+        ctx.builder.tee_local(dest_operand);
+        let result = ctx.builder.set_new_local();
+        ctx.deferred_flags = Some(crate::jit::DeferredFlags {
+            overwrite_address,
+            op1: None,
+            result,
+            changed: FLAGS_ALL & !FLAG_CARRY & !FLAG_OVERFLOW & !FLAG_ADJUST,
+            clear: FLAG_CARRY | FLAG_OVERFLOW | FLAG_ADJUST,
+        });
+        return;
+    }
     ctx.current_instruction = Instruction::Bitwise {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1554,6 +1650,22 @@ fn gen_xor32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
         source_operand.gen_get(ctx.builder);
         ctx.builder.xor_i32();
         ctx.builder.set_local(dest_operand);
+        return;
+    }
+    if let Some(overwrite_address) = deferred_flags_overwrite(ctx) {
+        codegen::gen_profiler_stat_increment(ctx.builder, crate::profiler::stat::DEFERRED_FLAGS);
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.xor_i32();
+        ctx.builder.tee_local(dest_operand);
+        let result = ctx.builder.set_new_local();
+        ctx.deferred_flags = Some(crate::jit::DeferredFlags {
+            overwrite_address,
+            op1: None,
+            result,
+            changed: FLAGS_ALL & !FLAG_CARRY & !FLAG_OVERFLOW & !FLAG_ADJUST,
+            clear: FLAG_CARRY | FLAG_OVERFLOW | FLAG_ADJUST,
+        });
         return;
     }
     ctx.current_instruction = Instruction::Bitwise {
