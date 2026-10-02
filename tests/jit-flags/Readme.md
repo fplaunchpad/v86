@@ -110,3 +110,9 @@ Dune gain: control mean 8.907 s, register-ABI mean 9.186 s. Both runs
 were substantially slower than the earlier pair, so launch/environment
 variability remains unresolved. No Dune improvement is established.
 The cross-page fixture gain must not be generalized to build workloads.
+
+The instrumented warm build recorded 63,223,387 chain attempts and
+59,925,628 successful chains, reducing CPU-loop compiled entries to
+3,900,289. The fast path is exercised heavily, but the repeated Dune
+comparison still did not improve. Register-transfer removal alone is
+therefore not an established solution for the build workload.
