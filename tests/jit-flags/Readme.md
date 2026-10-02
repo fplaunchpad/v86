@@ -104,3 +104,9 @@ The paired Node course runs completed in 158.1 s for the control and
 152.1 s for register passing. An earlier attempt timed out and a retry
 completed; the cause of that timeout is not established. Full emulator
 conformance and wider browser/workload validation remain outstanding.
+
+A repeated eight-build Chromium comparison did not reproduce that small
+Dune gain: control mean 8.907 s, register-ABI mean 9.186 s. Both runs
+were substantially slower than the earlier pair, so launch/environment
+variability remains unresolved. No Dune improvement is established.
+The cross-page fixture gain must not be generalized to build workloads.
