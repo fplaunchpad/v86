@@ -76,3 +76,31 @@ memory-check passed.
 
 A separate short-circuit memory-check prototype regressed eight warm Dune
 builds (4.610 s versus 4.067 s) and was rejected.
+
+## Register-passing JIT experiment
+
+The experiment/register-abi branch passes eight guest registers and the
+accumulated instruction budget as Wasm function arguments between compiled
+modules. Cached targets use bounded tail calls. Uncached code, faults,
+self-modifying-code exits, halt, and budget exhaustion retain CPU-loop
+writeback. This requires matching JavaScript and Wasm engines, including
+the shared table import, plus browser support for Wasm tail calls.
+
+The cross-page-benchmark.c fixture calls eight separate executable pages
+20 million times. Its expected checksum is 213456789. Three Chromium runs
+averaged 0.571 s for inline lookup alone and 0.355 s for register passing
+(about 1.6x faster). This specifically measures cross-module calls.
+
+The first eight warm Dune observations averaged 3.770 s and 3.611 s,
+respectively. The apparent improvement is small and needs repeated paired
+measurements. Integer, memory, and same-page indirect-call means were
+essentially unchanged. This does not achieve the 10x VM or build goal.
+
+The final candidate passed Chromium and Firefox flag, executable-page
+aliasing, multipage self-modification, precise-fault, and cross-page-call
+checks; two Rust unit tests with warnings denied; and the full course
+workflow with the existing snapshot, ending at Coverage: 14/19 (73.68%).
+The paired Node course runs completed in 158.1 s for the control and
+152.1 s for register passing. An earlier attempt timed out and a retry
+completed; the cause of that timeout is not established. Full emulator
+conformance and wider browser/workload validation remain outstanding.
