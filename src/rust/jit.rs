@@ -11,6 +11,7 @@ use crate::codegen;
 use crate::control_flow;
 use crate::control_flow::WasmStructure;
 use crate::cpu::cpu;
+#[cfg(feature = "profiler")]
 use crate::cpu::global_pointers;
 use crate::cpu::memory;
 use crate::cpu_context::CpuContext;
@@ -1219,15 +1220,8 @@ fn jit_generate_module(
 ) -> Vec<(u32, u16)> {
     builder.reset();
 
-    let mut register_locals = (0..8)
-        .map(|i| {
-            builder.load_fixed_i32(global_pointers::get_reg32_offset(i));
-            builder.set_new_local()
-        })
-        .collect();
-
-    builder.const_i32(0);
-    let instruction_counter = builder.set_new_local();
+    let mut register_locals = (0..8).map(|i| builder.argument(i + 1)).collect();
+    let instruction_counter = builder.argument(9);
 
     let exit_label = builder.block_void();
     let exit_with_fault_label = builder.block_void();
@@ -2025,6 +2019,7 @@ fn jit_generate_module(
     {
         // exit
         ctx.builder.block_end();
+        codegen::gen_chain_with_register_arguments(ctx);
         codegen::gen_move_registers_from_locals_to_memory(ctx);
         codegen::gen_update_instruction_counter(ctx);
     }

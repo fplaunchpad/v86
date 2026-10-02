@@ -82,6 +82,63 @@ pub fn gen_find_cache_entry_in_page(
     ctx.builder.free_local(address);
 }
 
+// Keep guest registers and the bounded instruction count in the Wasm ABI
+// across compiled modules. Faults, uncached targets, and budget exhaustion
+// retain the existing CPU-loop exit and register writeback.
+pub fn gen_chain_with_register_arguments(ctx: &mut JitContext) {
+    use crate::cpu::cpu::{tlb_code, Code, LOOP_COUNTER, WASM_TABLE_OFFSET};
+    gen_profiler_stat_increment(ctx.builder, profiler::stat::JIT_CHAIN_ATTEMPT);
+    let no_chain = ctx.builder.block_void();
+    ctx.builder.get_local(&ctx.instruction_counter);
+    ctx.builder.const_i32(LOOP_COUNTER);
+    ctx.builder.geu_i32();
+    ctx.builder.br_if(no_chain);
+    ctx.builder.load_fixed_u8(global_pointers::in_hlt as u32);
+    ctx.builder.br_if(no_chain);
+    gen_get_eip(ctx.builder);
+    let address = ctx.builder.tee_new_local();
+    ctx.builder.const_i32(12);
+    ctx.builder.shr_u_i32();
+    ctx.builder.const_i32(2);
+    ctx.builder.shl_i32();
+    ctx.builder.load_aligned_i32(unsafe { &tlb_code[0] as *const _ as u32 });
+    let code = ctx.builder.tee_new_local();
+    ctx.builder.eqz_i32();
+    ctx.builder.br_if(no_chain);
+    ctx.builder.get_local(&code);
+    ctx.builder.load_u8(std::mem::offset_of!(Code, state_flags) as u32);
+    ctx.builder.load_fixed_u8(global_pointers::state_flags as u32);
+    ctx.builder.ne_i32();
+    ctx.builder.br_if(no_chain);
+    ctx.builder.get_local(&address);
+    ctx.builder.const_i32(0xFFF);
+    ctx.builder.and_i32();
+    ctx.builder.const_i32(1);
+    ctx.builder.shl_i32();
+    ctx.builder.get_local(&code);
+    ctx.builder.add_i32();
+    ctx.builder.load_aligned_u16(std::mem::offset_of!(Code, state_table) as u32);
+    let state = ctx.builder.tee_new_local();
+    ctx.builder.const_i32(u16::MAX as i32);
+    ctx.builder.eq_i32();
+    ctx.builder.br_if(no_chain);
+    gen_profiler_stat_increment(ctx.builder, profiler::stat::JIT_CHAIN_SUCCESS);
+    ctx.builder.get_local(&state);
+    for register in ctx.register_locals.iter() {
+        ctx.builder.get_local(register);
+    }
+    ctx.builder.get_local(&ctx.instruction_counter);
+    ctx.builder.get_local(&code);
+    ctx.builder.load_aligned_u16(std::mem::offset_of!(Code, wasm_table_index) as u32);
+    ctx.builder.const_i32(WASM_TABLE_OFFSET as i32);
+    ctx.builder.add_i32();
+    ctx.builder.return_call_jit();
+    ctx.builder.block_end();
+    ctx.builder.free_local(state);
+    ctx.builder.free_local(code);
+    ctx.builder.free_local(address);
+}
+
 pub fn gen_get_eip(builder: &mut WasmBuilder) {
     builder.load_fixed_i32(global_pointers::instruction_pointer as u32);
 }
