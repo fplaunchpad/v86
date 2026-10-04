@@ -118,6 +118,8 @@ pub enum stat {
     SEG_OFFSET_NOT_OPTIMISED_FS,
     SEG_OFFSET_NOT_OPTIMISED_GS,
     SEG_OFFSET_NOT_OPTIMISED_NOT_FLAT,
+    JIT_CHAIN_ATTEMPT,
+    JIT_CHAIN_SUCCESS,
 }
 
 #[allow(non_upper_case_globals)]

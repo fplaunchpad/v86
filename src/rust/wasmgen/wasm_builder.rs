@@ -55,6 +55,7 @@ enum FunctionType {
     FN3_I32_I64_I32,
     FN3_I32_I64_I32_RET,
     FN4_I32_I64_I64_I32_RET,
+    FN_JIT,
     // When adding at the end, update LAST below
 }
 
@@ -64,10 +65,10 @@ impl FunctionType {
         unsafe { transmute(x) }
     }
     pub fn to_u8(self: FunctionType) -> u8 { self as u8 }
-    pub const LAST: FunctionType = FunctionType::FN4_I32_I64_I64_I32_RET;
+    pub const LAST: FunctionType = FunctionType::FN_JIT;
 }
 
-pub const WASM_MODULE_ARGUMENT_COUNT: u8 = 1;
+pub const WASM_MODULE_ARGUMENT_COUNT: u8 = 10;
 
 pub struct WasmBuilder {
     output: Vec<u8>,
@@ -177,6 +178,7 @@ impl WasmBuilder {
         dbg_assert!(self.label_stack.is_empty());
 
         self.write_memory_import();
+        self.write_chain_table_import();
         self.write_function_section();
         self.write_export_section();
 
@@ -263,6 +265,13 @@ impl WasmBuilder {
 
         for i in 0..(nr_of_function_types) {
             match FunctionType::of_u8(i) {
+                FunctionType::FN_JIT => {
+                    self.output.push(op::TYPE_FUNC);
+                    self.output.push(WASM_MODULE_ARGUMENT_COUNT);
+                    self.output.extend(std::iter::repeat(op::TYPE_I32)
+                        .take(WASM_MODULE_ARGUMENT_COUNT as usize));
+                    self.output.push(0);
+                },
                 FunctionType::FN0 => {
                     self.output.push(op::TYPE_FUNC);
                     self.output.push(0); // no args
@@ -495,6 +504,21 @@ impl WasmBuilder {
         self.set_import_table_size(new_table_size);
     }
 
+    fn write_chain_table_import(&mut self) {
+        self.output.extend([1, b'e', 1, b't', 1, 0x70, 0, 0]);
+        self.set_import_count(self.import_count + 1);
+        self.set_import_table_size(self.import_table_size + 8);
+    }
+
+    pub fn argument(&self, index: u8) -> WasmLocal {
+        dbg_assert!(index < WASM_MODULE_ARGUMENT_COUNT);
+        WasmLocal(index)
+    }
+
+    pub fn return_call_jit(&mut self) {
+        self.instruction_body.extend([0x13, FunctionType::FN_JIT.to_u8(), 0]);
+    }
+
     fn write_import_entry(&mut self, fn_name: &str, type_index: FunctionType) -> u16 {
         self.output.push(1); // length of module name
         self.output.push('e' as u8); // module name
@@ -516,7 +540,7 @@ impl WasmBuilder {
         self.output.push(op::SC_FUNCTION);
         self.output.push(2); // length of this section
         self.output.push(1); // count of signature indices
-        self.output.push(FunctionType::FN1.to_u8());
+        self.output.push(FunctionType::FN_JIT.to_u8());
     }
 
     pub fn write_export_section(&mut self) {
@@ -534,7 +558,7 @@ impl WasmBuilder {
         let next_op_idx = self.output.len();
         self.output.push(0);
         self.output.push(0); // add 2 bytes for writing 16 byte val
-        write_fixed_leb16_at_idx(&mut self.output, next_op_idx, self.import_count - 1);
+        write_fixed_leb16_at_idx(&mut self.output, next_op_idx, self.import_count - 2);
     }
 
     fn get_fn_idx(&mut self, fn_name: &str, type_index: FunctionType) -> u16 {
@@ -576,6 +600,9 @@ impl WasmBuilder {
         }
     }
     pub fn free_local(&mut self, local: WasmLocal) {
+        if local.idx() < WASM_MODULE_ARGUMENT_COUNT {
+            return;
+        }
         dbg_assert!(
             (WASM_MODULE_ARGUMENT_COUNT..self.local_count + WASM_MODULE_ARGUMENT_COUNT)
                 .contains(&local.0)

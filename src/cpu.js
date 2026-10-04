@@ -332,6 +332,7 @@ CPU.prototype.create_jit_imports = function()
     const jit_imports = Object.create(null);
 
     jit_imports["m"] = this.wm.exports["memory"];
+    jit_imports["t"] = this.wm.wasm_table;
 
     for(const name of Object.keys(this.wm.exports))
     {
