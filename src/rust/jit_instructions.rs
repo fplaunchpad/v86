@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use crate::cpu::memory;
+
 use crate::codegen;
 use crate::codegen::{BitSize, ConditionNegate};
 use crate::cpu::cpu::{
@@ -986,7 +988,69 @@ fn gen_add8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
     ctx.builder
         .load_fixed_u8(global_pointers::last_result as u32);
 }
+// Elide flags only for unprefixed register operations when a later
+// instruction in this basic block overwrites all arithmetic flags. Every
+// intervening instruction must neither read flags nor fault.
+fn arithmetic_flags_are_dead(ctx: &JitContext) -> bool {
+    if !ctx.cpu.osize_32() || ctx.cpu.prefixes != 0 {
+        return false;
+    }
+    let current = ctx.start_of_current_instruction;
+    let next = ctx.cpu.eip;
+    if next >= ctx.end_of_current_block || next & 0xFFF >= 0xFF0 {
+        return false;
+    }
+    let op = memory::read8(current) as u8;
+    let modrm = memory::read8(current + 1) as u8;
+    let current_register = match op {
+        0x01 | 0x03 | 0x09 | 0x0B | 0x21 | 0x23 | 0x29 | 0x2B | 0x31 | 0x33
+        | 0x81 | 0x83 | 0xC1 | 0xD1 | 0xD3 => modrm & 0xC0 == 0xC0,
+        0x05 | 0x0D | 0x25 | 0x2D | 0x35 => true,
+        _ => false,
+    };
+    if !current_register {
+        return false;
+    }
+    // Register moves and LEA neither read arithmetic flags nor fault. Scan
+    // across a bounded sequence, stopping at every other instruction.
+    let mut next = next;
+    for _ in 0..16 {
+        if next >= ctx.end_of_current_block || next & 0xFFF >= 0xFF0 {
+            return false;
+        }
+        let op = memory::read8(next) as u8;
+        let modrm = memory::read8(next + 1) as u8;
+        match op {
+            0x01 | 0x03 | 0x09 | 0x0B | 0x21 | 0x23 | 0x29 | 0x2B | 0x31 | 0x33
+            | 0x39 | 0x3B | 0x85 => return modrm & 0xC0 == 0xC0,
+            0x05 | 0x0D | 0x25 | 0x2D | 0x35 | 0x3D | 0xA9 => return true,
+            0x81 | 0x83 => return modrm & 0xC0 == 0xC0 && !matches!((modrm >> 3) & 7, 2 | 3),
+            0x88 | 0x89 | 0x8A | 0x8B if modrm & 0xC0 == 0xC0 => next += 2,
+            0x90..=0x97 => next += 1,
+            0xB0..=0xB7 => next += 2,
+            0xB8..=0xBF => next += 5,
+            0x8D if modrm & 0xC0 != 0xC0 => {
+                let mut decoder = ctx.cpu.clone();
+                decoder.eip = next + 2;
+                crate::modrm::skip(&mut decoder, modrm);
+                next = decoder.eip;
+            },
+            0x0F if matches!(modrm, 0xB6 | 0xB7 | 0xBE | 0xBF)
+                && memory::read8(next + 2) & 0xC0 == 0xC0 => next += 3,
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn gen_add32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.add_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     ctx.current_instruction = Instruction::Add {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1043,6 +1107,13 @@ fn gen_sub8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
         .load_fixed_u8(global_pointers::last_result as u32);
 }
 fn gen_sub32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.sub_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     ctx.current_instruction = Instruction::Sub {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1335,6 +1406,13 @@ fn gen_and8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
         .load_fixed_u8(global_pointers::last_result as u32);
 }
 fn gen_and32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.and_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     ctx.current_instruction = Instruction::Bitwise {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1422,6 +1500,13 @@ fn gen_or8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loca
         .load_fixed_u8(global_pointers::last_result as u32);
 }
 fn gen_or32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.or_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     ctx.current_instruction = Instruction::Bitwise {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1464,6 +1549,13 @@ fn gen_xor8(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Loc
         .load_fixed_u8(global_pointers::last_result as u32);
 }
 fn gen_xor32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.xor_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     ctx.current_instruction = Instruction::Bitwise {
         opsize: OPSIZE_32,
         dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1600,6 +1692,13 @@ impl ShiftCount {
 }
 
 fn gen_shl32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.shl_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     if let &LocalOrImmediate::Immediate(1..=31) = source_operand {
         ctx.current_instruction = Instruction::NonZeroShift {
             dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1673,6 +1772,13 @@ fn gen_shl32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
     }
 }
 fn gen_shr32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.shr_u_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     if let &LocalOrImmediate::Immediate(1..=31) = source_operand {
         ctx.current_instruction = Instruction::NonZeroShift {
             dest: local_to_instruction_operand(ctx, dest_operand),
@@ -1739,6 +1845,13 @@ fn gen_shr32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &Lo
     }
 }
 fn gen_sar32(ctx: &mut JitContext, dest_operand: &WasmLocal, source_operand: &LocalOrImmediate) {
+    if arithmetic_flags_are_dead(ctx) {
+        ctx.builder.get_local(dest_operand);
+        source_operand.gen_get(ctx.builder);
+        ctx.builder.shr_s_i32();
+        ctx.builder.set_local(dest_operand);
+        return;
+    }
     if let &LocalOrImmediate::Immediate(1..=31) = source_operand {
         ctx.current_instruction = Instruction::NonZeroShift {
             dest: local_to_instruction_operand(ctx, dest_operand),

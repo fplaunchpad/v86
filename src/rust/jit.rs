@@ -341,6 +341,7 @@ pub struct JitContext<'a> {
     pub builder: &'a mut WasmBuilder,
     pub register_locals: &'a mut Vec<WasmLocal>,
     pub start_of_current_instruction: u32,
+    pub end_of_current_block: u32,
     pub exit_with_fault_label: Label,
     pub exit_label: Label,
     pub current_instruction: Instruction,
@@ -1252,6 +1253,7 @@ fn jit_generate_module(
         builder,
         register_locals: &mut register_locals,
         start_of_current_instruction: 0,
+        end_of_current_block: 0,
         exit_with_fault_label,
         exit_label,
         current_instruction: Instruction::Other,
@@ -2086,6 +2088,7 @@ fn jit_generate_basic_block(ctx: &mut JitContext, block: &BasicBlock) {
     ctx.builder.set_local(&ctx.instruction_counter);
 
     ctx.cpu.eip = start_addr;
+    ctx.end_of_current_block = stop_addr;
     ctx.current_instruction = Instruction::Other;
     ctx.previous_instruction = Instruction::Other;
 
