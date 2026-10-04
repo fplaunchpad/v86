@@ -50,3 +50,29 @@ upstream executable-page aliasing/self-modification checks, and two Rust
 unit tests with warnings denied. The earlier course-pinned implementation
 also passed Firefox checks and the complete course build/test workflow.
 That earlier validation does not replace testing current upstream.
+
+## Inline indirect-target lookup experiment
+
+The perf/inline-indirect-lookup branch builds on the flag patch. It emits
+the live TLB code-pointer, CPU-mode, module-index, and entry-state checks
+directly in Wasm, avoiding a Rust helper call on every indirect jump. It
+uses compiler-derived field offsets and retains the missing-target exit.
+
+Eight warm Dune builds averaged 4.067 s with flags alone and 4.046 s with
+inline lookup, which does not establish a Dune speedup. Matching native-only runs averaged 0.790 s for flags alone and 0.698 s
+for inline lookup on the indirect-call fixture (about 13% faster). Integer
+and memory means were unchanged. These are microbenchmark results and
+require broader validation.
+
+The final candidate passed Firefox flag, paging, multipage self-modifying
+code, and precise-fault checks; two Rust unit tests with warnings denied;
+and the full course workflow using current upstream JavaScript and the
+existing course snapshot. Coverage completed at 14/19 (73.68%).
+
+Build memory-check.c with gcc -O2 and run it in the 32-bit x86 guest. It
+checks successful unaligned/cross-page reads and writes, protection faults,
+and preservation of arithmetic flags at a fault. Expected output:
+memory-check passed.
+
+A separate short-circuit memory-check prototype regressed eight warm Dune
+builds (4.610 s versus 4.067 s) and was rejected.

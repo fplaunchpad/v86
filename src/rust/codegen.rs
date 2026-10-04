@@ -20,6 +20,68 @@ pub fn gen_add_cs_offset(ctx: &mut JitContext) {
     }
 }
 
+// Mirror jit_find_cache_entry_in_page in generated Wasm. Read the live TLB
+// every time so address-space changes and code invalidation remain visible.
+pub fn gen_find_cache_entry_in_page(
+    ctx: &mut JitContext,
+    target: &WasmLocal,
+    state_flags: crate::state_flags::CachedStateFlags,
+) {
+    use crate::cpu::cpu::{tlb_code, Code};
+    gen_profiler_stat_increment(ctx.builder, profiler::stat::INDIRECT_JUMP);
+    ctx.builder.const_i32(-1);
+    ctx.builder.set_local(target);
+    let done = ctx.builder.block_void();
+    let missing = ctx.builder.block_void();
+    gen_get_eip(ctx.builder);
+    let address = ctx.builder.tee_new_local();
+    ctx.builder.const_i32(12);
+    ctx.builder.shr_u_i32();
+    ctx.builder.const_i32(2);
+    ctx.builder.shl_i32();
+    ctx.builder
+        .load_aligned_i32(unsafe { &tlb_code[0] as *const _ as u32 });
+    let code = ctx.builder.tee_new_local();
+    ctx.builder.eqz_i32();
+    ctx.builder.br_if(missing);
+
+    ctx.builder.get_local(&code);
+    ctx.builder
+        .load_u8(std::mem::offset_of!(Code, state_flags) as u32);
+    ctx.builder.const_i32(state_flags.to_u32() as i32);
+    ctx.builder.ne_i32();
+    ctx.builder.br_if(missing);
+    ctx.builder.get_local(&code);
+    ctx.builder
+        .load_aligned_u16(std::mem::offset_of!(Code, wasm_table_index) as u32);
+    ctx.builder.const_i32(ctx.wasm_table_index.to_u16() as i32);
+    ctx.builder.ne_i32();
+    ctx.builder.br_if(missing);
+
+    ctx.builder.get_local(&address);
+    ctx.builder.const_i32(0xFFF);
+    ctx.builder.and_i32();
+    ctx.builder.const_i32(1);
+    ctx.builder.shl_i32();
+    ctx.builder.get_local(&code);
+    ctx.builder.add_i32();
+    ctx.builder
+        .load_aligned_u16(std::mem::offset_of!(Code, state_table) as u32);
+    let state = ctx.builder.tee_new_local();
+    ctx.builder.const_i32(u16::MAX as i32);
+    ctx.builder.eq_i32();
+    ctx.builder.br_if(missing);
+    ctx.builder.get_local(&state);
+    ctx.builder.set_local(target);
+    ctx.builder.br(done);
+    ctx.builder.block_end();
+    gen_profiler_stat_increment(ctx.builder, profiler::stat::INDIRECT_JUMP_NO_ENTRY);
+    ctx.builder.block_end();
+    ctx.builder.free_local(state);
+    ctx.builder.free_local(code);
+    ctx.builder.free_local(address);
+}
+
 pub fn gen_get_eip(builder: &mut WasmBuilder) {
     builder.load_fixed_i32(global_pointers::instruction_pointer as u32);
 }
